@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyUrl } from "@/lib/sign";
 import { encodeFilename } from "@/lib/filename";
+import { profileHeaders, PROFILE_COUNT } from "@/lib/profiles";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -78,23 +79,30 @@ export async function GET(request: NextRequest) {
     pathExtension
   );
 
-  const headers: Record<string, string> = {
-    Accept: looksLikeImage ? IMAGE_ACCEPT : "*/*",
-    "User-Agent": USER_AGENT,
-    Referer: "https://www.youtube.com/",
-    Origin: "https://www.youtube.com",
+  const headersFor = (profile: number) => {
+    const base: Record<string, string> = looksLikeImage
+      ? {
+          Accept: IMAGE_ACCEPT,
+          "User-Agent": USER_AGENT,
+          Referer: "https://www.youtube.com/",
+        }
+      : profileHeaders(profile);
+
+    if (range) {
+      base.Range = range;
+    }
+
+    return base;
   };
 
-  if (range) {
-    headers.Range = range;
-  }
-
   try {
+    let profile = 0;
+
     let response = await fetch(target, {
       method: "GET",
       redirect: "follow",
       cache: "no-store",
-      headers,
+      headers: headersFor(profile),
     });
 
     for (
@@ -107,14 +115,22 @@ export async function GET(request: NextRequest) {
         response.status >= 500);
       attempt++
     ) {
+      console.log(
+        `[download] ${parsed.hostname} http=${response.status} profile=${profile}`
+      );
+
       await response.body?.cancel().catch(() => undefined);
       await sleep(RETRY_DELAY_MS * attempt);
+
+      if (response.status === 403) {
+        profile = (profile + 1) % PROFILE_COUNT;
+      }
 
       response = await fetch(target, {
         method: "GET",
         redirect: "follow",
         cache: "no-store",
-        headers,
+        headers: headersFor(profile),
       });
     }
 
