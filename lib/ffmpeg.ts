@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { encodeFilename } from "@/lib/filename";
+import { profileHeaders, PROFILE_COUNT } from "@/lib/profiles";
 
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
@@ -43,42 +44,37 @@ function assertHttp(value: string) {
   return url;
 }
 
-function mediaHeaders(extra: Record<string, string> = {}) {
-  return {
-    Accept: "*/*",
-    "User-Agent": USER_AGENT,
-    Referer: "https://www.youtube.com/",
-    Origin: "https://www.youtube.com",
-    ...extra,
-  };
-}
-
 type Deadline = { at: number };
 
 function remaining(deadline: Deadline) {
   return deadline.at - Date.now();
 }
 
+type Session = { profile: number };
+
 async function fetchRange(
   url: URL,
   start: number,
   end: number,
-  deadline: Deadline
+  deadline: Deadline,
+  session: Session
 ) {
   let lastError = "Gagal mengambil media.";
 
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  for (let attempt = 1; attempt <= PROFILE_COUNT + 2; attempt++) {
     const left = remaining(deadline);
 
     if (left < 2000) {
       throw new MediaError("Waktu proses habis saat mengunduh media.", 504);
     }
 
+    const profile = session.profile;
+
     try {
       const response = await fetch(url, {
         redirect: "follow",
         cache: "no-store",
-        headers: mediaHeaders({ Range: `bytes=${start}-${end}` }),
+        headers: profileHeaders(profile, { Range: `bytes=${start}-${end}` }),
         signal: AbortSignal.timeout(Math.min(25_000, left)),
       });
 
@@ -92,10 +88,19 @@ async function fetchRange(
         lastError = "Potongan media kosong.";
       } else {
         lastError = `Server media HTTP ${response.status}`;
-        await response.body?.cancel().catch(() => undefined);
 
-        if (response.status === 403 || response.status === 404) {
-          if (attempt >= 2) break;
+        console.log(
+          `[media] ${url.hostname} http=${response.status} profile=${profile} range=${start}-${end} body=${(
+            await response.text().catch(() => "")
+          )
+            .slice(0, 120)
+            .replace(/\s+/g, " ")}`
+        );
+
+        if (response.status === 403 || response.status === 401) {
+          session.profile = (profile + 1) % PROFILE_COUNT;
+
+          if (attempt >= PROFILE_COUNT) break;
         }
       }
     } catch (error) {
@@ -104,7 +109,7 @@ async function fetchRange(
       lastError = error instanceof Error ? error.message : lastError;
     }
 
-    await sleep(400 * attempt);
+    await sleep(300 * attempt);
   }
 
   throw new MediaError(lastError);
@@ -124,7 +129,9 @@ export async function fetchToFile(
 ) {
   const url = assertHttp(rawUrl);
 
-  const first = await fetchRange(url, 0, CHUNK_BYTES - 1, deadline);
+  const session: Session = { profile: 0 };
+
+  const first = await fetchRange(url, 0, CHUNK_BYTES - 1, deadline, session);
 
   const handle = await open(dest, "w");
 
@@ -176,7 +183,7 @@ export async function fetchToFile(
         const end = Math.min(start + CHUNK_BYTES, total) - 1;
 
         try {
-          const part = await fetchRange(url, start, end, deadline);
+          const part = await fetchRange(url, start, end, deadline, session);
 
           if (part.response.status !== 206) {
             throw new MediaError("Server media tidak mendukung unduhan bertahap.");
