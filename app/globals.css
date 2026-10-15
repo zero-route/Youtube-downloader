@@ -365,11 +365,12 @@ a {
   position: absolute;
   top: 50%;
   left: 50%;
-  width: 58px;
-  height: 40px;
-  margin: -20px 0 0 -29px;
-  border-radius: 12px;
-  background: linear-gradient(180deg, var(--red-light) 0%, var(--red-deep) 100%);
+  width: 56px;
+  height: 56px;
+  margin: -28px 0 0 -28px;
+  border-radius: 50%;
+  background: rgba(12, 12, 13, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.28);
   color: #ffffff;
   display: flex;
   align-items: center;
@@ -383,6 +384,7 @@ a {
 
 .thumb-button:hover .play {
   transform: scale(1.05);
+  background: rgba(12, 12, 13, 0.85);
 }
 
 .stage-playing {
@@ -962,17 +964,6 @@ a {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-}
-
-.brand-mark {
-  width: 26px;
-  height: 18px;
-  border-radius: 6px;
-  background: linear-gradient(180deg, var(--red-light) 0%, var(--red-deep) 100%);
-  color: #ffffff;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
 }
 
 .alert + .alert,
