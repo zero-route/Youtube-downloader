@@ -147,6 +147,10 @@ a {
   flex-shrink: 0;
 }
 
+.field:focus-within .field-icon {
+  color: var(--red-deep);
+}
+
 .field input {
   flex: 1;
   min-width: 0;
