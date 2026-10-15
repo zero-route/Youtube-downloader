@@ -45,7 +45,9 @@ const QUALITIES: Quality[] = [
   { value: "240p", label: "240p", hint: "Ringan" },
 ];
 
-type Ready = { title: string; url: string };
+type Ready = { title: string; url: string | null; note: string | null };
+
+type Receiving = { percent: number | null };
 
 const compact = new Intl.NumberFormat("id-ID", {
   notation: "compact",
@@ -279,6 +281,8 @@ export default function Home() {
   const [elapsed, setElapsed] = useState(0);
   const [ready, setReady] = useState<Ready | null>(null);
   const [jobError, setJobError] = useState("");
+  const [receiving, setReceiving] = useState<Receiving | null>(null);
+  const [fallbackUrl, setFallbackUrl] = useState<string | null>(null);
 
   useEffect(() => {
     if (!busy) {
@@ -304,6 +308,8 @@ export default function Home() {
     setBusy(null);
     setReady(null);
     setJobError("");
+    setReceiving(null);
+    setFallbackUrl(null);
   }
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -379,7 +385,7 @@ export default function Home() {
         );
       }
 
-      setReady({ title, url: result.url });
+      setReady({ title: `${title} siap`, url: result.url, note: null });
 
       const link = document.createElement("a");
 
@@ -394,6 +400,100 @@ export default function Home() {
       );
     } finally {
       setBusy(null);
+    }
+  }
+
+  async function downloadMp3() {
+    if (!data || busy) return;
+
+    setBusy("mp3");
+    setReady(null);
+    setJobError("");
+    setReceiving(null);
+    setFallbackUrl(null);
+
+    try {
+      const response = await fetch("/api/mp3", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: data.id,
+          title: data.title,
+          artist: data.channel.name,
+          year: data.publishedAt
+            ? String(new Date(data.publishedAt * 1000).getUTCFullYear())
+            : null,
+        }),
+        cache: "no-store",
+      });
+
+      if (!response.ok || !response.body) {
+        const failure = (await response.json().catch(() => null)) as {
+          error?: string;
+          url?: string | null;
+        } | null;
+
+        if (failure?.url) setFallbackUrl(failure.url);
+
+        throw new Error(
+          failure?.error || `Gagal menyiapkan MP3 (HTTP ${response.status}).`
+        );
+      }
+
+      const total = Number(response.headers.get("content-length") || 0);
+      const reader = response.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let received = 0;
+
+      setReceiving({ percent: total ? 0 : null });
+
+      while (true) {
+        const { done, value } = await reader.read();
+
+        if (done) break;
+
+        chunks.push(value);
+        received += value.byteLength;
+
+        if (total) {
+          setReceiving({
+            percent: Math.min(99, Math.round((received / total) * 100)),
+          });
+        }
+      }
+
+      const blob = new Blob(chunks as BlobPart[], { type: "audio/mpeg" });
+
+      if (blob.size < 4096) {
+        throw new Error("File MP3 hasil proses kosong. Coba lagi.");
+      }
+
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+
+      link.href = objectUrl;
+      link.download = `${cleanFileName(data.title)}.mp3`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+
+      setReady({
+        title: "MP3 siap",
+        url: null,
+        note:
+          response.headers.get("x-cover-embedded") === "1"
+            ? "Cover thumbnail HD sudah disematkan di file."
+            : "File tersimpan, tapi cover tidak berhasil disematkan.",
+      });
+    } catch (err) {
+      setJobError(
+        err instanceof Error ? err.message : "Terjadi kesalahan saat menyiapkan MP3."
+      );
+    } finally {
+      setBusy(null);
+      setReceiving(null);
     }
   }
 
@@ -429,11 +529,6 @@ export default function Home() {
     <main className="page">
       <header className="topbar">
         <a className="brand" href="#top" aria-label="YouTify beranda">
-          <span className="brand-mark" aria-hidden="true">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M8 5.5v13a1 1 0 0 0 1.5.9L20 12.9a1 1 0 0 0 0-1.8L9.5 4.6A1 1 0 0 0 8 5.5Z" />
-            </svg>
-          </span>
           YouTify
         </a>
         <span className="brand-note">YouTube Downloader</span>
@@ -644,21 +739,21 @@ export default function Home() {
                 <div className="audio-row">
                   <div className="audio-meta">
                     <strong>MP3</strong>
-                    <span>Audio saja, siap diputar di perangkat apa pun</span>
+                    <span>Audio saja, lengkap dengan judul, artis, dan cover thumbnail HD</span>
                   </div>
 
                   <button
                     type="button"
                     className="btn btn-primary audio-btn"
                     disabled={busy !== null}
-                    onClick={() => startDownload("mp3", "Audio MP3")}
+                    onClick={downloadMp3}
                   >
                     {busy === "mp3" ? (
                       <span className="spinner" aria-hidden="true" />
                     ) : (
                       <DownloadIcon size={20} />
                     )}
-                    <span>{busy === "mp3" ? `${elapsed} dtk` : "MP3"}</span>
+                    <span>{busy === "mp3" ? "Memproses" : "MP3"}</span>
                   </button>
                 </div>
               </div>
@@ -670,11 +765,25 @@ export default function Home() {
                   <span className="spinner spinner-small" aria-hidden="true" />
                 </span>
                 <div className="alert-body">
-                  <strong>Menyiapkan file... {elapsed} dtk</strong>
+                  <strong>
+                    {receiving
+                      ? `Menerima file... ${
+                          receiving.percent !== null
+                            ? `${receiving.percent}%`
+                            : `${elapsed} dtk`
+                        }`
+                      : `Menyiapkan file... ${elapsed} dtk`}
+                  </strong>
                   <p>
-                    Server sedang membuat link unduhan. Unduhan akan mulai
-                    otomatis, jangan tutup halaman ini.
+                    {busy === "mp3"
+                      ? "Server sedang membuat MP3 dan menyematkan cover. Jangan tutup halaman ini."
+                      : "Server sedang membuat link unduhan. Unduhan akan mulai otomatis, jangan tutup halaman ini."}
                   </p>
+                  {receiving && receiving.percent !== null && (
+                    <div className="progress">
+                      <span style={{ width: `${receiving.percent}%` }} />
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -683,17 +792,23 @@ export default function Home() {
               <div className="alert" role="status">
                 <span className="alert-icon">✓</span>
                 <div>
-                  <strong>{ready.title} siap</strong>
+                  <strong>{ready.title}</strong>
                   <p>
-                    Unduhan dimulai otomatis. Kalau tidak mulai,{" "}
-                    <a
-                      className="inline-link"
-                      href={ready.url}
-                      rel="noopener noreferrer"
-                    >
-                      ketuk di sini
-                    </a>
-                    .
+                    {ready.note ??
+                      "Unduhan dimulai otomatis."}{" "}
+                    {ready.url && (
+                      <>
+                        Kalau tidak mulai,{" "}
+                        <a
+                          className="inline-link"
+                          href={ready.url}
+                          rel="noopener noreferrer"
+                        >
+                          ketuk di sini
+                        </a>
+                        .
+                      </>
+                    )}
                   </p>
                 </div>
               </div>
@@ -705,6 +820,17 @@ export default function Home() {
                 <div>
                   <strong>Proses gagal</strong>
                   <p>{jobError}</p>
+                  {fallbackUrl && (
+                    <p>
+                      <a
+                        className="inline-link"
+                        href={fallbackUrl}
+                        rel="noopener noreferrer"
+                      >
+                        Unduh MP3 tanpa cover
+                      </a>
+                    </p>
+                  )}
                 </div>
               </div>
             )}
