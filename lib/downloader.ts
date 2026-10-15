@@ -1,4 +1,4 @@
- import { ProviderError } from "@/lib/youtube";
+import { ProviderError } from "@/lib/youtube";
 
 const DEFAULT_DOWNLOAD_HOST = "all-in-one-downloader-api.p.rapidapi.com";
 
@@ -10,10 +10,25 @@ const ALLOWED = new Set<string>([...VIDEO_FORMATS, ...AUDIO_FORMATS, "mp4"]);
 export type DownloadLink = {
   url: string;
   filename: string | null;
+  cover: string | null;
 };
 
 export function isAllowedFormat(value: unknown): value is string {
   return typeof value === "string" && ALLOWED.has(value);
+}
+
+function pickCover(thumbnails: unknown): string | null {
+  if (!thumbnails || typeof thumbnails !== "object") return null;
+
+  const list = thumbnails as Record<string, unknown>;
+
+  for (const key of ["max", "high", "hd", "maxres"]) {
+    const value = list[key];
+
+    if (typeof value === "string" && /^https:\/\//i.test(value)) return value;
+  }
+
+  return null;
 }
 
 function sleep(ms: number) {
@@ -22,7 +37,8 @@ function sleep(ms: number) {
 
 export async function requestDownload(
   videoUrl: string,
-  format: string
+  format: string,
+  budgetMs = 52_000
 ): Promise<DownloadLink> {
   const key = process.env.RAPIDAPI_KEY;
 
@@ -35,7 +51,7 @@ export async function requestDownload(
 
   const host = process.env.RAPIDAPI_DOWNLOAD_HOST?.trim() || DEFAULT_DOWNLOAD_HOST;
   const startedAt = Date.now();
-  const deadline = 52_000;
+  const deadline = budgetMs;
 
   let status: number | null = null;
   let detail = "";
@@ -89,6 +105,7 @@ export async function requestDownload(
         return {
           url: link,
           filename: typeof body?.filename === "string" ? body.filename : null,
+          cover: pickCover(body?.thumbnails),
         };
       }
 
