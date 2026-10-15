@@ -2,32 +2,6 @@
 
 import { useEffect, useRef, useState } from "react";
 
-type Convert = { payload: string; token: string };
-
-type VideoOption = {
-  key: string;
-  label: string;
-  height: number;
-  kind: "direct" | "merge";
-  bytes: number | null;
-  blocked: string | null;
-  download: string | null;
-  convert: Convert | null;
-};
-
-type AudioOptions = {
-  mp3: {
-    bitrate: number;
-    blocked: string | null;
-    convert: Convert | null;
-  };
-  m4a: {
-    bytes: number | null;
-    format: string;
-    download: string;
-  } | null;
-};
-
 type VideoData = {
   id: string;
   url: string;
@@ -52,10 +26,6 @@ type VideoData = {
     likes: number | null;
     comments: number | null;
   };
-  preview: { src: string; width: number | null; height: number | null } | null;
-  videos: VideoOption[];
-  audio: AudioOptions;
-  expiresAt: number | null;
   meta: { details: string };
 };
 
@@ -65,14 +35,17 @@ type ApiResponse = {
   error?: string;
 };
 
-type Job = {
-  key: string;
-  title: string;
-  phase: "processing" | "receiving";
-  percent: number | null;
-};
+type Quality = { value: string; label: string; hint: string };
 
-type Done = { title: string; detail: string };
+const QUALITIES: Quality[] = [
+  { value: "1080p", label: "1080p", hint: "Full HD" },
+  { value: "720p", label: "720p", hint: "HD" },
+  { value: "480p", label: "480p", hint: "SD" },
+  { value: "360p", label: "360p", hint: "Hemat" },
+  { value: "240p", label: "240p", hint: "Ringan" },
+];
+
+type Ready = { title: string; url: string };
 
 const compact = new Intl.NumberFormat("id-ID", {
   notation: "compact",
@@ -81,14 +54,6 @@ const compact = new Intl.NumberFormat("id-ID", {
 
 function formatCount(value: number | null) {
   return value === null ? "–" : compact.format(value);
-}
-
-function formatSize(bytes: number | null) {
-  if (!bytes || bytes <= 0) return "";
-
-  const mb = bytes / (1024 * 1024);
-
-  return `~${mb >= 10 ? Math.round(mb) : mb.toFixed(1).replace(".", ",")} MB`;
 }
 
 function formatDate(seconds: number | null) {
@@ -307,18 +272,16 @@ export default function Home() {
   const [data, setData] = useState<VideoData | null>(null);
   const [tab, setTab] = useState<"video" | "audio">("video");
   const [playing, setPlaying] = useState(false);
-  const [quality, setQuality] = useState(0);
+  const [quality, setQuality] = useState(1);
   const [avatarFailed, setAvatarFailed] = useState(false);
   const [expanded, setExpanded] = useState(false);
-  const [job, setJob] = useState<Job | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
-  const [done, setDone] = useState<Done | null>(null);
+  const [ready, setReady] = useState<Ready | null>(null);
   const [jobError, setJobError] = useState("");
-  const [notice, setNotice] = useState("");
-  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    if (!job) {
+    if (!busy) {
       setElapsed(0);
       return;
     }
@@ -330,26 +293,17 @@ export default function Home() {
     }, 500);
 
     return () => clearInterval(timer);
-  }, [job?.key]);
-
-  function announce(message: string) {
-    if (noticeTimer.current) clearTimeout(noticeTimer.current);
-
-    setNotice(message);
-
-    noticeTimer.current = setTimeout(() => setNotice(""), 7000);
-  }
+  }, [busy]);
 
   function resetView() {
     setTab("video");
     setPlaying(false);
-    setQuality(0);
+    setQuality(1);
     setAvatarFailed(false);
     setExpanded(false);
-    setJob(null);
-    setDone(null);
+    setBusy(null);
+    setReady(null);
     setJobError("");
-    setNotice("");
   }
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -398,107 +352,52 @@ export default function Home() {
     resetView();
   }
 
-  function isExpired() {
-    return Boolean(data?.expiresAt && Date.now() / 1000 > data.expiresAt - 60);
-  }
+  async function startDownload(format: string, title: string) {
+    if (!data || busy) return;
 
-  async function runConversion(input: {
-    key: string;
-    endpoint: string;
-    convert: Convert;
-    fileName: string;
-    doneTitle: string;
-  }) {
-    if (job) return;
-
-    if (isExpired()) {
-      setJobError("Tautan unduhan sudah kedaluwarsa. Tekan Unduh lagi untuk memuat ulang video.");
-      return;
-    }
-
-    setDone(null);
+    setBusy(format);
+    setReady(null);
     setJobError("");
-    setJob({ key: input.key, title: input.doneTitle, phase: "processing", percent: null });
 
     try {
-      const response = await fetch(input.endpoint, {
+      const response = await fetch("/api/convert", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(input.convert),
+        body: JSON.stringify({ id: data.id, format }),
         cache: "no-store",
       });
 
-      if (!response.ok || !response.body) {
-        const failure = (await response.json().catch(() => null)) as {
-          error?: string;
-        } | null;
+      const result = (await response.json().catch(() => null)) as {
+        ok?: boolean;
+        url?: string;
+        error?: string;
+      } | null;
 
-        throw new Error(failure?.error || `Proses gagal (HTTP ${response.status}).`);
+      if (!response.ok || !result?.ok || !result.url) {
+        throw new Error(
+          result?.error || `Gagal membuat link unduhan (HTTP ${response.status}).`
+        );
       }
 
-      const total = Number(response.headers.get("content-length") || 0);
-      const reader = response.body.getReader();
-      const chunks: Uint8Array[] = [];
-      let received = 0;
+      setReady({ title, url: result.url });
 
-      setJob((current) =>
-        current ? { ...current, phase: "receiving", percent: total ? 0 : null } : current
-      );
-
-      while (true) {
-        const { done: finished, value } = await reader.read();
-
-        if (finished) break;
-
-        chunks.push(value);
-        received += value.byteLength;
-
-        if (total) {
-          const percent = Math.min(99, Math.round((received / total) * 100));
-
-          setJob((current) => (current ? { ...current, percent } : current));
-        }
-      }
-
-      const blob = new Blob(chunks as BlobPart[], {
-        type: response.headers.get("content-type") || "application/octet-stream",
-      });
-
-      if (blob.size < 1024) {
-        throw new Error("File hasil proses kosong. Coba lagi.");
-      }
-
-      const objectUrl = URL.createObjectURL(blob);
       const link = document.createElement("a");
 
-      link.href = objectUrl;
-      link.download = input.fileName;
+      link.href = result.url;
+      link.rel = "noopener noreferrer";
       document.body.appendChild(link);
       link.click();
       link.remove();
-
-      setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
-
-      const detail =
-        response.headers.get("x-cover-embedded") === "0"
-          ? `${formatSize(blob.size)} · tanpa cover`
-          : formatSize(blob.size);
-
-      setDone({ title: input.doneTitle, detail });
     } catch (err) {
       setJobError(
-        err instanceof Error ? err.message : "Terjadi kesalahan saat memproses file."
+        err instanceof Error ? err.message : "Terjadi kesalahan saat membuat unduhan."
       );
     } finally {
-      setJob(null);
+      setBusy(null);
     }
   }
 
-  const chosen = data
-    ? data.videos[Math.min(quality, Math.max(data.videos.length - 1, 0))]
-    : undefined;
-
-  const baseName = data ? cleanFileName(data.title) : "YouTify";
+  const chosen = QUALITIES[Math.min(quality, QUALITIES.length - 1)];
   const duration = formatDuration(data?.durationSeconds ?? null);
   const date = formatDate(data?.publishedAt ?? null);
   const channelName = data?.channel.name || "YouTube";
@@ -526,8 +425,6 @@ export default function Home() {
       ].filter((stat) => stat.value !== null)
     : [];
 
-  const busy = job !== null;
-
   return (
     <main className="page">
       <header className="topbar">
@@ -544,7 +441,7 @@ export default function Home() {
 
       <section className="hero" id="top">
         <h1 className="hero-title">Unduh video YouTube</h1>
-        <p className="tagline">Video MP4, Shorts, dan audio MP3, dengan mudah.</p>
+        <p className="tagline">Video MP4 hingga 1080p dan audio MP3, dengan mudah.</p>
       </section>
 
       <form className="search" onSubmit={handleSubmit}>
@@ -609,24 +506,22 @@ export default function Home() {
       {data && !loading && (
         <>
           <section className="card">
-            <div className={playing ? "stage stage-playing" : "stage"}>
-              {playing && data.preview ? (
-                <video
-                  key={data.preview.src}
-                  className="player"
-                  src={data.preview.src}
-                  poster={data.thumb ?? undefined}
-                  controls
-                  autoPlay
-                  playsInline
+            <div className={playing ? "stage stage-playing stage-embed" : "stage"}>
+              {playing ? (
+                <iframe
+                  className="embed"
+                  src={`https://www.youtube-nocookie.com/embed/${data.id}?autoplay=1&rel=0&playsinline=1`}
+                  title={data.title}
+                  allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+                  allowFullScreen
+                  referrerPolicy="strict-origin-when-cross-origin"
                 />
               ) : (
                 <button
                   type="button"
                   className="thumb-button"
-                  onClick={() => data.preview && setPlaying(true)}
+                  onClick={() => setPlaying(true)}
                   aria-label="Putar pratinjau"
-                  disabled={!data.preview}
                 >
                   {data.thumb ? (
                     <>
@@ -650,19 +545,17 @@ export default function Home() {
                     <span className="thumb thumb-empty" />
                   )}
 
-                  {data.preview && (
-                    <span className="play">
-                      <svg
-                        width="28"
-                        height="28"
-                        viewBox="0 0 24 24"
-                        fill="currentColor"
-                        aria-hidden="true"
-                      >
-                        <path d="M8 5.5v13a1 1 0 0 0 1.5.9L20 12.9a1 1 0 0 0 0-1.8L9.5 4.6A1 1 0 0 0 8 5.5Z" />
-                      </svg>
-                    </span>
-                  )}
+                  <span className="play">
+                    <svg
+                      width="28"
+                      height="28"
+                      viewBox="0 0 24 24"
+                      fill="currentColor"
+                      aria-hidden="true"
+                    >
+                      <path d="M8 5.5v13a1 1 0 0 0 1.5.9L20 12.9a1 1 0 0 0 0-1.8L9.5 4.6A1 1 0 0 0 8 5.5Z" />
+                    </svg>
+                  </span>
                 </button>
               )}
 
@@ -702,97 +595,47 @@ export default function Home() {
 
             {tab === "video" && (
               <>
-                {data.videos.length > 0 ? (
-                  <>
-                    <div className="qualities" role="radiogroup" aria-label="Kualitas video">
-                      {data.videos.map((item, index) => {
-                        const selected = chosen === item;
+                <div className="qualities" role="radiogroup" aria-label="Kualitas video">
+                  {QUALITIES.map((item, index) => {
+                    const selected = chosen === item;
 
-                        return (
-                          <button
-                            key={item.key}
-                            type="button"
-                            role="radio"
-                            aria-checked={selected}
-                            disabled={Boolean(item.blocked)}
-                            title={item.blocked ?? undefined}
-                            className={
-                              selected
-                                ? "quality quality-on"
-                                : item.blocked
-                                  ? "quality quality-off"
-                                  : "quality"
-                            }
-                            onClick={() => setQuality(index)}
-                          >
-                            <strong>{item.label}</strong>
-                            <span>
-                              {item.blocked
-                                ? "Terlalu besar"
-                                : formatSize(item.bytes) ||
-                                  (item.kind === "direct" ? "Langsung" : "HD")}
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
+                    return (
+                      <button
+                        key={item.value}
+                        type="button"
+                        role="radio"
+                        aria-checked={selected}
+                        className={selected ? "quality quality-on" : "quality"}
+                        onClick={() => setQuality(index)}
+                      >
+                        <strong>{item.label}</strong>
+                        <span>{item.hint}</span>
+                      </button>
+                    );
+                  })}
+                </div>
 
-                    {chosen?.blocked && (
-                      <p className="hint">{chosen.blocked}</p>
+                <div className="actions">
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-block"
+                    disabled={busy !== null}
+                    onClick={() =>
+                      startDownload(chosen.value, `Video ${chosen.label}`)
+                    }
+                  >
+                    {busy === chosen.value ? (
+                      <span className="spinner" aria-hidden="true" />
+                    ) : (
+                      <DownloadIcon />
                     )}
-
-                    {chosen && chosen.kind === "merge" && !chosen.blocked && (
-                      <p className="hint">
-                        Kualitas {chosen.label} digabung (video + audio) di server,
-                        prosesnya bisa 10–40 detik.
-                      </p>
-                    )}
-
-                    <div className="actions">
-                      {chosen && chosen.kind === "direct" && chosen.download ? (
-                        <a
-                          className="btn btn-primary btn-block"
-                          href={chosen.download}
-                          onClick={() => announce(`Mengunduh video ${chosen.label}...`)}
-                        >
-                          <DownloadIcon />
-                          <span>Download Video {chosen.label}</span>
-                        </a>
-                      ) : (
-                        <button
-                          type="button"
-                          className="btn btn-primary btn-block"
-                          disabled={busy || !chosen?.convert}
-                          onClick={() =>
-                            chosen?.convert &&
-                            runConversion({
-                              key: chosen.key,
-                              endpoint: "/api/merge",
-                              convert: chosen.convert,
-                              fileName: `${baseName} (${chosen.label}).mp4`,
-                              doneTitle: `Video ${chosen.label} siap`,
-                            })
-                          }
-                        >
-                          {job?.key === chosen?.key ? (
-                            <span className="spinner" aria-hidden="true" />
-                          ) : (
-                            <DownloadIcon />
-                          )}
-                          <span>
-                            {job?.key === chosen?.key
-                              ? "Memproses..."
-                              : `Download Video ${chosen?.label ?? ""}`}
-                          </span>
-                        </button>
-                      )}
-                    </div>
-                  </>
-                ) : (
-                  <p className="hint">
-                    Format video tidak tersedia untuk tautan ini. Coba tab Audio.
-                  </p>
-                )}
+                    <span>
+                      {busy === chosen.value
+                        ? `Menyiapkan... ${elapsed} dtk`
+                        : `Download Video ${chosen.label}`}
+                    </span>
+                  </button>
+                </div>
               </>
             )}
 
@@ -801,124 +644,67 @@ export default function Home() {
                 <div className="audio-row">
                   <div className="audio-meta">
                     <strong>MP3</strong>
-                    <span>
-                      {data.audio.mp3.bitrate} kbps · judul, artis, dan cover
-                      disematkan
-                    </span>
+                    <span>Audio saja, siap diputar di perangkat apa pun</span>
                   </div>
 
                   <button
                     type="button"
                     className="btn btn-primary audio-btn"
-                    disabled={busy || !data.audio.mp3.convert}
-                    title={data.audio.mp3.blocked ?? undefined}
-                    onClick={() =>
-                      data.audio.mp3.convert &&
-                      runConversion({
-                        key: "mp3",
-                        endpoint: "/api/mp3",
-                        convert: data.audio.mp3.convert,
-                        fileName: `${baseName}.mp3`,
-                        doneTitle: "MP3 siap",
-                      })
-                    }
+                    disabled={busy !== null}
+                    onClick={() => startDownload("mp3", "Audio MP3")}
                   >
-                    {job?.key === "mp3" ? (
+                    {busy === "mp3" ? (
                       <span className="spinner" aria-hidden="true" />
                     ) : (
                       <DownloadIcon size={20} />
                     )}
-                    <span>{job?.key === "mp3" ? "Memproses" : "MP3"}</span>
+                    <span>{busy === "mp3" ? `${elapsed} dtk` : "MP3"}</span>
                   </button>
                 </div>
-
-                {data.audio.mp3.blocked && (
-                  <p className="hint">{data.audio.mp3.blocked}</p>
-                )}
-
-                {data.audio.m4a && (
-                  <div className="audio-row">
-                    <div className="audio-meta">
-                      <strong>M4A</strong>
-                      <span>
-                        {data.audio.m4a.format}
-                        {formatSize(data.audio.m4a.bytes)
-                          ? ` · ${formatSize(data.audio.m4a.bytes)}`
-                          : ""}{" "}
-                        · tanpa konversi, langsung
-                      </span>
-                    </div>
-
-                    <a
-                      className="btn btn-light audio-btn"
-                      href={data.audio.m4a.download}
-                      onClick={() => announce("Mengunduh audio M4A...")}
-                    >
-                      <DownloadIcon size={20} />
-                      <span>M4A</span>
-                    </a>
-                  </div>
-                )}
               </div>
             )}
 
-            {job && (
+            {busy && (
               <div className="alert" role="status">
                 <span className="alert-icon">
                   <span className="spinner spinner-small" aria-hidden="true" />
                 </span>
                 <div className="alert-body">
-                  <strong>
-                    {job.phase === "processing"
-                      ? `Menyiapkan file... ${elapsed} dtk`
-                      : `Menerima file... ${job.percent !== null ? `${job.percent}%` : `${elapsed} dtk`}`}
-                  </strong>
+                  <strong>Menyiapkan file... {elapsed} dtk</strong>
                   <p>
-                    {job.phase === "processing"
-                      ? "Server sedang mengunduh dan memproses. Jangan tutup halaman ini."
-                      : "Unduhan hampir selesai, file akan tersimpan otomatis."}
+                    Server sedang membuat link unduhan. Unduhan akan mulai
+                    otomatis, jangan tutup halaman ini.
                   </p>
-                  {job.phase === "receiving" && job.percent !== null && (
-                    <div className="progress">
-                      <span style={{ width: `${job.percent}%` }} />
-                    </div>
-                  )}
                 </div>
               </div>
             )}
 
-            {done && !job && (
+            {ready && !busy && (
               <div className="alert" role="status">
                 <span className="alert-icon">✓</span>
                 <div>
-                  <strong>{done.title}</strong>
+                  <strong>{ready.title} siap</strong>
                   <p>
-                    {done.detail ? `${done.detail}. ` : ""}Cek notifikasi unduhan atau
-                    folder Unduhan di perangkatmu.
+                    Unduhan dimulai otomatis. Kalau tidak mulai,{" "}
+                    <a
+                      className="inline-link"
+                      href={ready.url}
+                      rel="noopener noreferrer"
+                    >
+                      ketuk di sini
+                    </a>
+                    .
                   </p>
                 </div>
               </div>
             )}
 
-            {jobError && !job && (
+            {jobError && !busy && (
               <div className="alert" role="alert">
                 <span className="alert-icon">!</span>
                 <div>
                   <strong>Proses gagal</strong>
                   <p>{jobError}</p>
-                </div>
-              </div>
-            )}
-
-            {notice && !job && !done && !jobError && (
-              <div className="alert" role="status">
-                <span className="alert-icon">i</span>
-                <div>
-                  <strong>{notice}</strong>
-                  <p>
-                    Unduhan diserahkan ke browser. Pantau di notifikasi unduhan
-                    Chrome atau menu ⋮ lalu Unduhan.
-                  </p>
                 </div>
               </div>
             )}
