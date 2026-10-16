@@ -17,6 +17,7 @@
   --red-deep: #cc0018;
   --red-soft: #ff7a7a;
   --red-tint: rgba(255, 42, 42, 0.1);
+   --brand: linear-gradient(110deg, #f4f4f5 0%, #ff2a2a 42%, #ff5c5c 78%, #cc0018 100%);
 }
 
 * {
@@ -83,7 +84,10 @@ a {
 }
 
 .brand {
-  color: var(--text);
+  background: var(--brand);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
   font-size: 1.25rem;
   font-weight: 700;
   letter-spacing: -0.04em;
